@@ -1,0 +1,234 @@
+# Coffee Shop VPC - Complete AWS Tutorial
+
+## Prerequisites
+- AWS Account (KodeKloud lab environment)
+- Basic familiarity with AWS Console
+
+---
+
+## STEP 1: Create Your VPC (The Building)
+
+### 1.1 Navigate to VPC Service
+1. Log into AWS Console
+2. Search for "VPC" in the search bar
+3. Click on "VPC" service
+
+### 1.2 Create VPC
+1. Click **"Create VPC"**
+2. Choose **"VPC only"** (we'll create subnets manually for learning)
+3. Fill in details:
+   ```
+   Name tag: CoffeeShop-VPC
+   IPv4 CIDR block: 10.0.0.0/16
+   IPv6 CIDR block: No IPv6 CIDR block
+   Tenancy: Default
+   ```
+4. Click **"Create VPC"**
+
+**What just happened?** You created your private network space with 65,536 available IP addresses (10.0.0.1 to 10.0.255.254).
+
+---
+
+## STEP 2: Create Subnets (Divide Into Rooms)
+
+### 2.1 Create Public Subnet (Storefront)
+1. In VPC Dashboard, click **"Subnets"** in left menu
+2. Click **"Create subnet"**
+3. Fill in:
+   ```
+   VPC ID: Select "CoffeeShop-VPC"
+   Subnet name: CoffeeShop-Public-Subnet
+   Availability Zone: us-east-1a (or your region's first AZ)
+   IPv4 CIDR block: 10.0.1.0/24
+   ```
+4. Click **"Create subnet"**
+
+### 2.2 Create Private Subnet (Kitchen)
+1. Click **"Create subnet"** again
+2. Fill in:
+   ```
+   VPC ID: Select "CoffeeShop-VPC"
+   Subnet name: CoffeeShop-Private-Subnet
+   Availability Zone: us-east-1a (same as public)
+   IPv4 CIDR block: 10.0.2.0/24
+   ```
+3. Click **"Create subnet"**
+
+### 2.3 Create Database Subnet (Vault)
+1. Click **"Create subnet"** again
+2. Fill in:
+   ```
+   VPC ID: Select "CoffeeShop-VPC"
+   Subnet name: CoffeeShop-DB-Subnet
+   Availability Zone: us-east-1b (different AZ for RDS requirement)
+   IPv4 CIDR block: 10.0.3.0/24
+   ```
+3. Click **"Create subnet"**
+
+**What just happened?** You divided your building into three rooms: a storefront (public), kitchen (private), and vault (database).
+
+---
+
+## STEP 3: Create Internet Gateway (Main Entrance)
+
+### 3.1 Create IGW
+1. Click **"Internet gateways"** in left menu
+2. Click **"Create internet gateway"**
+3. Fill in:
+   ```
+   Name tag: CoffeeShop-IGW
+   ```
+4. Click **"Create internet gateway"**
+
+### 3.2 Attach IGW to VPC
+1. Select your newly created IGW
+2. Click **"Actions"** → **"Attach to VPC"**
+3. Select **"CoffeeShop-VPC"**
+4. Click **"Attach internet gateway"**
+
+**What just happened?** You installed the main door to your coffee shop. Without this, no customers could reach you from the internet.
+
+---
+
+## STEP 4: Configure Route Tables (Give Directions)
+
+### 4.1 Create Public Route Table
+1. Click **"Route tables"** in left menu
+2. Click **"Create route table"**
+3. Fill in:
+   ```
+   Name: CoffeeShop-Public-RT
+   VPC: CoffeeShop-VPC
+   ```
+4. Click **"Create route table"**
+
+### 4.2 Add Internet Route to Public RT
+1. Select your **"CoffeeShop-Public-RT"**
+2. Click **"Routes"** tab
+3. Click **"Edit routes"**
+4. Click **"Add route"**
+5. Fill in:
+   ```
+   Destination: 0.0.0.0/0
+   Target: Internet Gateway → CoffeeShop-IGW
+   ```
+6. Click **"Save changes"**
+
+### 4.3 Associate Public Subnet
+1. Still in **"CoffeeShop-Public-RT"**
+2. Click **"Subnet associations"** tab
+3. Click **"Edit subnet associations"**
+4. Check **"CoffeeShop-Public-Subnet"**
+5. Click **"Save associations"**
+
+**What just happened?** You told the public subnet: "If someone wants to go to the internet (0.0.0.0/0), send them through the main door (IGW)."
+
+---
+
+## STEP 5: Enable Auto-Assign Public IP
+
+### 5.1 Configure Public Subnet
+1. Go back to **"Subnets"**
+2. Select **"CoffeeShop-Public-Subnet"**
+3. Click **"Actions"** → **"Edit subnet settings"**
+4. Check **"Enable auto-assign public IPv4 address"**
+5. Click **"Save"**
+
+**What just happened?** Now anything placed in the public subnet automatically gets a public IP address (like a street address customers can find).
+
+---
+
+## STEP 6: Test with a Simple Web Server
+
+### 6.1 Launch EC2 Instance in Public Subnet
+1. Go to **EC2 service**
+2. Click **"Launch instance"**
+3. Fill in:
+   ```
+   Name: CoffeeShop-WebServer
+   AMI: Amazon Linux 2023 (free tier)
+   Instance type: t2.micro (free tier)
+   ```
+
+### 6.2 Configure Network Settings
+1. Click **"Edit"** in Network settings
+2. Configure:
+   ```
+   VPC: CoffeeShop-VPC
+   Subnet: CoffeeShop-Public-Subnet
+   Auto-assign public IP: Enable
+   ```
+
+### 6.3 Create Security Group
+1. Click **"Create security group"**
+2. Fill in:
+   ```
+   Security group name: CoffeeShop-Web-SG
+   Description: Allow HTTP traffic
+   VPC: CoffeeShop-VPC
+   ```
+3. Add inbound rules:
+   ```
+   Type: HTTP, Protocol: TCP, Port: 80, Source: 0.0.0.0/0
+   Type: SSH, Protocol: TCP, Port: 22, Source: My IP
+   ```
+
+### 6.4 Add User Data Script
+1. Expand **"Advanced details"**
+2. In **"User data"** box, paste:
+   ```bash
+   #!/bin/bash
+   yum update -y
+   yum install -y httpd
+   systemctl start httpd
+   systemctl enable httpd
+   echo "<h1>Welcome to Coffee Shop!</h1><p>Your VPC is working!</p>" > /var/www/html/index.html
+   ```
+
+### 6.5 Launch Instance
+1. Click **"Launch instance"**
+2. Create a new key pair or use existing one
+3. Click **"Launch instance"**
+
+---
+
+## STEP 7: Test Your Setup
+
+### 7.1 Find Public IP
+1. Go to **EC2 Instances**
+2. Select your **"CoffeeShop-WebServer"**
+3. Copy the **"Public IPv4 address"**
+
+### 7.2 Test in Browser
+1. Open browser
+2. Go to `http://YOUR_PUBLIC_IP`
+3. You should see: "Welcome to Coffee Shop! Your VPC is working!"
+
+**🎉 Congratulations!** You've successfully created a VPC with a public subnet and deployed a working web server!
+
+---
+
+## What We've Built So Far
+
+```
+Internet → Internet Gateway → Public Subnet → Web Server
+```
+
+This is like having:
+- A street (Internet)
+- A front door (Internet Gateway)  
+- A storefront (Public Subnet)
+- A cashier (Web Server)
+
+---
+
+## Next Steps (Phase 2)
+
+In the next phase, we'll add:
+1. **Private subnet** with a backend API server
+2. **Load balancer** to distribute traffic
+3. **Database subnet** with RDS
+4. **NAT Gateway** for private subnet internet access
+5. **Security groups** to lock everything down
+
+**Ready for Phase 2?** Let me know when your web server is working and we'll add the private components!

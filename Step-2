@@ -1,0 +1,514 @@
+# Coffee Shop Phase 2 - Complete Architecture (Manual Setup)
+
+## What We're Adding in Phase 2
+
+```
+Current: Internet → IGW → Public Subnet → Web Server
+
+Phase 2: Internet → IGW → Load Balancer → Private Backend Servers → Database
+                                     ↓
+                           NAT Gateway (for server updates)
+```
+
+**New Components:**
+- 🏗️ Application Load Balancer (Professional cashier counter)
+- 🔒 Private backend servers (Kitchen staff)
+- 🗄️ RDS Database (Secure filing cabinet)
+- 🌐 NAT Gateway (Service entrance for deliveries)
+
+---
+
+## STEP 1: Create NAT Gateway (Service Entrance)
+
+### Why NAT Gateway?
+Your private servers need to download software updates and make API calls, but they shouldn't accept inbound connections from the internet.
+
+### 1.1 Allocate Elastic IP
+1. Go to **EC2** → **Network & Security** → **Elastic IPs**
+2. Click **"Allocate Elastic IP address"**
+3. Click **"Allocate"**
+4. Tag it: `Name: CoffeeShop-NAT-EIP`
+
+### 1.2 Create NAT Gateway
+1. Go to **VPC** → **NAT gateways**
+2. Click **"Create NAT gateway"**
+3. Configure:
+   ```
+   Name: CoffeeShop-NAT-GW
+   Subnet: CoffeeShop-Public-Subnet (must be public!)
+   Connectivity type: Public
+   Elastic IP allocation ID: Select your allocated IP
+   ```
+4. Click **"Create NAT gateway"**
+
+**💡 Key Point:** NAT Gateway goes in PUBLIC subnet but serves PRIVATE subnets.
+
+---
+
+## STEP 2: Create Private Route Table
+
+### 2.1 Create Route Table for Private Subnet
+1. Go to **VPC** → **Route tables**
+2. Click **"Create route table"**
+3. Configure:
+   ```
+   Name: CoffeeShop-Private-RT
+   VPC: CoffeeShop-VPC
+   ```
+4. Click **"Create route table"**
+
+### 2.2 Add Route to NAT Gateway
+1. Select **"CoffeeShop-Private-RT"**
+2. Click **"Routes"** tab → **"Edit routes"**
+3. Click **"Add route"**
+4. Configure:
+   ```
+   Destination: 0.0.0.0/0
+   Target: NAT Gateway → CoffeeShop-NAT-GW
+   ```
+5. Click **"Save changes"**
+
+### 2.3 Associate Private Subnet
+1. Click **"Subnet associations"** tab
+2. Click **"Edit subnet associations"**
+3. Check **"CoffeeShop-Private-Subnet"**
+4. Click **"Save associations"**
+
+**What happened:** Private subnet can now reach internet through NAT Gateway, but internet cannot reach private subnet directly.
+
+---
+
+## STEP 3: Create Application Load Balancer (Professional Cashier)
+
+### 3.1 Create Security Group for Load Balancer
+1. Go to **EC2** → **Security Groups**
+2. Click **"Create security group"**
+3. Configure:
+   ```
+   Name: CoffeeShop-ALB-SG
+   Description: Security group for Application Load Balancer
+   VPC: CoffeeShop-VPC
+   
+   Inbound Rules:
+   - Type: HTTP, Port: 80, Source: 0.0.0.0/0
+   - Type: HTTPS, Port: 443, Source: 0.0.0.0/0
+   
+   Outbound Rules:
+   - Type: Custom TCP, Port: 3000, Destination: Private Backend SG (we'll create this next)
+   ```
+
+### 3.2 Create Application Load Balancer
+1. Go to **EC2** → **Load Balancers**
+2. Click **"Create load balancer"**
+3. Choose **"Application Load Balancer"**
+4. Configure:
+   ```
+   Name: CoffeeShop-ALB
+   Scheme: Internet-facing
+   IP address type: IPv4
+   
+   Network mapping:
+   VPC: CoffeeShop-VPC
+   Availability Zones: 
+   - us-east-1a: CoffeeShop-Public-Subnet
+   - us-east-1b: (create another public subnet - see step below)
+   
+   Security groups: CoffeeShop-ALB-SG
+   ```
+
+### 3.3 Create Second Public Subnet (ALB Requirement)
+**Important:** ALB requires subnets in at least 2 AZs.
+
+1. Go to **VPC** → **Subnets**
+2. Click **"Create subnet"**
+3. Configure:
+   ```
+   VPC: CoffeeShop-VPC
+   Name: CoffeeShop-Public-Subnet-2
+   Availability Zone: us-east-1b
+   IPv4 CIDR: 10.0.4.0/24
+   ```
+4. Enable auto-assign public IP (Actions → Edit subnet settings)
+5. Associate with public route table
+
+Now go back and complete the ALB creation with both public subnets.
+
+### 3.4 Configure Target Group
+1. In ALB creation, scroll to **"Listeners and routing"**
+2. Click **"Create target group"**
+3. Configure:
+   ```
+   Target type: Instances
+   Name: CoffeeShop-Backend-TG
+   Protocol: HTTP, Port: 3000
+   VPC: CoffeeShop-VPC
+   
+   Health check:
+   Protocol: HTTP
+   Path: /health
+   ```
+4. Click **"Next"** → **"Create target group"** (don't register targets yet)
+5. Back in ALB creation, select this target group
+6. Click **"Create load balancer"**
+
+---
+
+## STEP 4: Create Backend API Servers (Kitchen Staff)
+
+### 4.1 Create Security Group for Backend
+1. Create security group:
+   ```
+   Name: CoffeeShop-Backend-SG
+   Description: Security group for backend API servers
+   VPC: CoffeeShop-VPC
+   
+   Inbound Rules:
+   - Type: Custom TCP, Port: 3000, Source: CoffeeShop-ALB-SG
+   - Type: SSH, Port: 22, Source: Your IP
+   
+   Outbound Rules:
+   - Type: All Traffic, Destination: 0.0.0.0/0
+   ```
+
+### 4.2 Create Backend Server 1
+1. Go to **EC2** → **Launch instance**
+2. Configure:
+   ```
+   Name: CoffeeShop-Backend-1
+   AMI: Amazon Linux 2023
+   Instance type: t2.micro
+   
+   Network settings:
+   VPC: CoffeeShop-VPC
+   Subnet: CoffeeShop-Private-Subnet
+   Auto-assign public IP: Disable (important!)
+   Security group: CoffeeShop-Backend-SG
+   ```
+
+### 4.3 Add User Data Script
+```bash
+#!/bin/bash
+yum update -y
+yum install -y nodejs npm
+
+# Create simple API server
+mkdir -p /opt/coffee-api
+cd /opt/coffee-api
+
+cat <<EOF > package.json
+{
+  "name": "coffee-api",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+EOF
+
+cat <<EOF > server.js
+const express = require('express');
+const app = express();
+const port = 3000;
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', server: 'backend-1' });
+});
+
+// Coffee menu endpoint
+app.get('/api/menu', (req, res) => {
+  res.json({
+    message: 'Welcome to Coffee Shop API!',
+    server: 'backend-1',
+    menu: [
+      { id: 1, name: 'Espresso', price: 2.50 },
+      { id: 2, name: 'Cappuccino', price: 3.50 },
+      { id: 3, name: 'Latte', price: 4.00 },
+      { id: 4, name: 'Americano', price: 3.00 }
+    ]
+  });
+});
+
+// Order endpoint
+app.post('/api/order', (req, res) => {
+  res.json({
+    message: 'Order received!',
+    server: 'backend-1',
+    orderId: Math.floor(Math.random() * 1000)
+  });
+});
+
+app.listen(port, () => {
+  console.log(\`Coffee API server running on port \${port}\`);
+});
+EOF
+
+# Install dependencies and start server
+npm install
+npm start &
+
+# Create systemd service for auto-start
+cat <<EOF > /etc/systemd/system/coffee-api.service
+[Unit]
+Description=Coffee Shop API
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/opt/coffee-api
+ExecStart=/usr/bin/node server.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable coffee-api
+systemctl start coffee-api
+```
+
+### 4.4 Create Backend Server 2
+Repeat the process but change:
+- Name: `CoffeeShop-Backend-2`
+- In server.js, change `'backend-1'` to `'backend-2'`
+
+---
+
+## STEP 5: Register Backend Servers with Load Balancer
+
+### 5.1 Register Targets
+1. Go to **EC2** → **Target groups**
+2. Select **"CoffeeShop-Backend-TG"**
+3. Click **"Targets"** tab → **"Register targets"**
+4. Select both backend instances
+5. Port: `3000`
+6. Click **"Register targets"**
+
+### 5.2 Test Health Checks
+Wait 2-3 minutes, then check that both targets show "healthy" status.
+
+---
+
+## STEP 6: Create RDS Database (Secure Vault)
+
+### 6.1 Create DB Subnet Group
+1. Go to **RDS** → **Subnet groups**
+2. Click **"Create DB subnet group"**
+3. Configure:
+   ```
+   Name: coffeeshop-db-subnet-group
+   Description: Subnet group for coffee shop database
+   VPC: CoffeeShop-VPC
+   
+   Add subnets:
+   - us-east-1a: CoffeeShop-DB-Subnet (10.0.3.0/24)
+   - us-east-1b: Create new subnet: CoffeeShop-DB-Subnet-2 (10.0.5.0/24)
+   ```
+
+### 6.2 Create Security Group for Database
+1. Create security group:
+   ```
+   Name: CoffeeShop-DB-SG
+   Description: Database security group
+   VPC: CoffeeShop-VPC
+   
+   Inbound Rules:
+   - Type: MySQL/Aurora, Port: 3306, Source: CoffeeShop-Backend-SG
+   
+   Outbound Rules: None needed
+   ```
+
+### 6.3 Create RDS Instance
+1. Go to **RDS** → **Databases**
+2. Click **"Create database"**
+3. Configure:
+   ```
+   Engine: MySQL
+   Version: 8.0.35
+   Template: Free tier
+   
+   DB instance identifier: coffeeshop-db
+   Master username: admin
+   Master password: CoffeeShop123!
+   
+   Instance class: db.t3.micro
+   Storage: 20 GB
+   
+   VPC: CoffeeShop-VPC
+   DB subnet group: coffeeshop-db-subnet-group
+   Security group: CoffeeShop-DB-SG
+   ```
+4. Click **"Create database"**
+
+---
+
+## STEP 7: Update Frontend to Use Load Balancer
+
+### 7.1 Update Your Original Web Server
+1. SSH to your original web server
+2. Update the HTML to point to the load balancer:
+
+```bash
+sudo tee /var/www/html/index.html > /dev/null <<EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Coffee Shop - Full Architecture</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            background: linear-gradient(135deg, #6B4E3D, #A0522D);
+            color: white;
+            text-align: center;
+            padding: 50px;
+        }
+        .container {
+            background: rgba(255,255,255,0.1);
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 { color: #FFD700; font-size: 3em; margin-bottom: 20px; }
+        .api-test {
+            background: rgba(255,255,255,0.2);
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #45a049; }
+        #result { 
+            background: #333;
+            color: #0f0;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+            text-align: left;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>☕ Coffee Shop - Complete Architecture! ☕</h1>
+        
+        <div class="api-test">
+            <h3>Test Your Backend API</h3>
+            <button onclick="testHealth()">Test Health Check</button>
+            <button onclick="testMenu()">Get Coffee Menu</button>
+            <button onclick="testOrder()">Place Order</button>
+            <div id="result"></div>
+        </div>
+        
+        <p><strong>Architecture Components:</strong></p>
+        <ul style="text-align: left;">
+            <li>✅ Application Load Balancer (Professional cashier)</li>
+            <li>✅ Private Backend Servers (Kitchen staff)</li>
+            <li>✅ RDS Database (Secure vault)</li>
+            <li>✅ NAT Gateway (Service entrance)</li>
+            <li>✅ Multi-AZ deployment (High availability)</li>
+        </ul>
+    </div>
+
+    <script>
+        const ALB_DNS = 'YOUR_LOAD_BALANCER_DNS_HERE'; // Replace with actual ALB DNS
+        
+        async function testHealth() {
+            try {
+                const response = await fetch(\`http://\${ALB_DNS}/health\`);
+                const data = await response.json();
+                document.getElementById('result').innerHTML = 
+                    'Health Check Result:\\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').innerHTML = 'Error: ' + error.message;
+            }
+        }
+        
+        async function testMenu() {
+            try {
+                const response = await fetch(\`http://\${ALB_DNS}/api/menu\`);
+                const data = await response.json();
+                document.getElementById('result').innerHTML = 
+                    'Menu API Result:\\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').innerHTML = 'Error: ' + error.message;
+            }
+        }
+        
+        async function testOrder() {
+            try {
+                const response = await fetch(\`http://\${ALB_DNS}/api/order\`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item: 'Cappuccino', quantity: 1 })
+                });
+                const data = await response.json();
+                document.getElementById('result').innerHTML = 
+                    'Order API Result:\\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').innerHTML = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
+EOF
+```
+
+### 7.2 Get Load Balancer DNS
+1. Go to **EC2** → **Load Balancers**
+2. Select your ALB
+3. Copy the **DNS name**
+4. Replace `YOUR_LOAD_BALANCER_DNS_HERE` in the HTML above
+
+---
+
+## STEP 8: Test Your Complete Architecture
+
+### 8.1 Test Flow
+1. Visit your original web server's public IP
+2. Click the API test buttons
+3. Watch requests flow: Frontend → ALB → Backend Servers → Database
+
+### 8.2 Verify Components
+- **Load Balancer:** Check target health in AWS Console
+- **Backend Servers:** SSH through bastion or session manager
+- **Database:** Verify it's only accessible from backend servers
+- **NAT Gateway:** Backend servers can reach internet for updates
+
+---
+
+## 🎉 Congratulations!
+
+You've built a production-ready, multi-tier architecture:
+
+```
+Internet Users
+      ↓
+Application Load Balancer (Public Subnet)
+      ↓
+Backend API Servers (Private Subnet)
+      ↓
+RDS Database (Database Subnet)
+```
+
+**Security Highlights:**
+- Database completely isolated from internet
+- Backend servers in private subnets
+- NAT Gateway for secure outbound access
+- Security groups controlling all traffic
+
+Ready to test it? Let me know what happens when you click those API test buttons!
